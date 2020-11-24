@@ -44,6 +44,8 @@ struct fd_deleter {
 
 using resource_handle = std::unique_ptr<void, fd_deleter>;  // file descriptors carry no type information, so we use void
 
+void parse(char const* line) { fprintf(stderr, "%s", line); }
+
 // And now for the main event...
 int main() {
     auto listen_socket = resource_handle(socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0));
@@ -107,7 +109,7 @@ int main() {
         if (new_event.data.fd == listen_socket.get().fd) {
             auto connect_addr = sockaddr_in6{};
             auto connect_size = unsigned(sizeof(connect_addr));
-            auto new_connection = resource_handle(accept(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&connect_addr), &connect_size));
+            auto new_connection = resource_handle(accept4(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&connect_addr), &connect_size, SOCK_NONBLOCK));
             if (new_connection.get().fd < 0) {
                 perror("Failed to accept connection");
                 new_connection.release();
@@ -162,6 +164,24 @@ int main() {
                 peername[0] = '\0';
             }
 
+            // we have some data on one of our connections
+            if (new_event.events & EPOLLIN) {
+                auto in = fdopen(new_event.data.fd, "r");
+                if (!in) {
+                    perror("Failed to open stream for socket");
+                    continue;
+                }
+
+                char* buffer = nullptr;
+                size_t length = 0;
+                int bytes = 0;
+                while ((bytes = getline(&buffer, &length, in)) > 0) {
+                    parse(buffer);
+                }
+
+                free(buffer);
+            }
+
             // one of our connections hung up
             if (new_event.events & (EPOLLHUP | EPOLLRDHUP)) {
                 std::erase_if(connections, [&](resource_handle const& handle) {
@@ -169,10 +189,6 @@ int main() {
                 });
 
                 fprintf(stderr, "%s hung up\n", peername[0] ? peername : "Peer");
-            }
-
-            if (new_event.events & EPOLLIN) {
-
             }
         }
     }
