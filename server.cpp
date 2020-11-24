@@ -1,8 +1,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <vector>
 
+#include <netdb.h>
 #include <netinet/in.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -41,19 +44,18 @@ using resource_handle = std::unique_ptr<void, fd_deleter>;  // file descriptors 
 
 // And now for the main event...
 int main() {
-    auto listen_socket = resource_handle(socket(AF_INET6, SOCK_STREAM, 0));
+    auto listen_socket = resource_handle(socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0));
 
-    auto listenfd = listen_socket.get().fd;
-
-    if (listenfd < 0) {
-        perror("failed to open socket");
+    if (listen_socket.get().fd < 0) {
+        perror("Failed to open socket");
+        listen_socket.release();
         return 1;
     }
 
     // Default varies by platform, so explicitly opt into IPv4 connections on this socket
     uint32_t off = 0;
-    if (setsockopt(listenfd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off)) < 0) {
-        perror("failed to unset IPv6-only");
+    if (setsockopt(listen_socket.get().fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off)) < 0) {
+        perror("Failed to unset IPv6-only");
         return 2;
     }
 
@@ -63,13 +65,83 @@ int main() {
         .sin6_addr   = IN6ADDR_ANY_INIT
     };
 
-    if (bind(listenfd, reinterpret_cast<sockaddr*>(&listen_addr), sizeof(listen_addr)) < 0) {
-        perror("failed to bind socket");
+    if (bind(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&listen_addr), sizeof(listen_addr)) < 0) {
+        perror("Failed to bind socket");
         return 3;
     }
 
-    if (listen(listenfd, 64) < 0) {
-        perror("failed to listen on socket");
+    if (listen(listen_socket.get().fd, 64) < 0) {
+        perror("Failed to listen on socket");
         return 4;
+    }
+
+    std::vector<resource_handle> connections;
+    connections.reserve(1024);  // 4 KiB in exchange for zero reallocations on the first 1024 connections is a no-brainer
+
+    auto epoll = resource_handle(epoll_create(1));
+    if (epoll.get().fd < 0) {
+        perror("Failed to create epoll");
+        epoll.release();
+        return 5;
+    }
+
+    auto event = epoll_event {
+        .events = EPOLLIN,
+        .data = { .fd = listen_socket.get().fd }
+    };
+
+    if (epoll_ctl(epoll.get().fd, EPOLL_CTL_ADD, listen_socket.get().fd, &event) < 0) {
+        perror("Failed to add listening socket to epoll");
+    }
+
+    while(true) {
+        auto new_event = epoll_event{};
+        if (epoll_wait(epoll.get().fd, &new_event, 1, -1) < 0) {
+            perror("Failed to wait on epoll");
+            return 6;
+        }
+
+        // new incoming connection
+        if (new_event.data.fd == listen_socket.get().fd) {
+            auto connect_addr = sockaddr_in6{};
+            auto connect_size = unsigned(sizeof(connect_addr));
+            auto new_connection = resource_handle(accept(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&connect_addr), &connect_size));
+            if (new_connection.get().fd < 0) {
+                perror("Failed to accept connection");
+                new_connection.release();
+                continue;
+            }
+
+            if (connect_size == sizeof(connect_addr)) {
+                static char buffer[1024];
+                if (getnameinfo(reinterpret_cast<sockaddr*>(&connect_addr), connect_size, buffer, sizeof(buffer), nullptr, 0, 0) == 0) {
+                    fprintf(stderr, "New connection from %s\n", buffer);
+                }
+                else {
+                    perror("Failed to get connection name");
+                }
+            }
+            else {
+                fprintf(stderr, "Warning: Unexpected connection address size\n");
+            }
+
+            auto data_event = epoll_event {
+                .events = EPOLLIN | EPOLLHUP,
+                .data = { .fd = new_connection.get().fd }
+            };
+
+            if (epoll_ctl(epoll.get().fd, EPOLL_CTL_ADD, new_connection.get().fd, &data_event) < 0) {
+                perror("Failed to add new connection to epoll");
+                continue;
+            }
+
+            connections.push_back(std::move(new_connection));
+        }
+
+        // event from one of our connections
+        else {
+
+            }
+        }
     }
 }
