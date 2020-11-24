@@ -1,0 +1,10 @@
+[Unit]
+Description=Simple counting server
+Conflicts=shutdown.target
+
+[Service]
+ExecStart=/usr/local/bin/counting-server
+Restart=on-failure
+
+[Install]
+WantedBy=network-online.target
