@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -5,6 +6,7 @@
 
 #include <netdb.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -18,8 +20,21 @@ auto get_peer_name(int fd) -> std::string;
 auto read_lines_from_fd(int fd) -> std::vector<std::string>;
 void parse_and_handle(int fd, std::string command, std::vector<resource_handle>* connections, int64_t* count);
 
+// This is global so that we don't have to
+// capture it in our signal handler below
+std::atomic<bool> running = true;
+
 int main()
 {
+    struct sigaction handler;
+    handler.sa_handler = [](int) { running = false; };
+
+    if (sigaction(SIGINT,  &handler, nullptr) == -1 ||
+        sigaction(SIGTERM, &handler, nullptr) == -1)
+    {
+        throw_system_error();
+    }
+
     auto listen_socket = listen_on_dual_tcp_socket(8089);
 
     std::vector<resource_handle> connections;
@@ -31,7 +46,7 @@ int main()
     fprintf(stderr, "Starting up... count initialized to 0\n");
     int64_t count = 0;
 
-    while(true) {
+    while(running) {
         auto new_event = poller.wait();
 
         // new incoming connection
@@ -64,6 +79,8 @@ int main()
             }
         }
     }
+
+    fprintf(stderr, "Shutting down...\n");
 }
 
 auto listen_on_dual_tcp_socket(uint16_t port) -> resource_handle
