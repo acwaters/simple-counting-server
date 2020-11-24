@@ -16,14 +16,14 @@ struct fd_deleter {
         int fd;
 
         constexpr pointer(int fd) noexcept : fd(fd) {}
-        constexpr pointer(decltype(nullptr) = nullptr) noexcept : fd(0) {}
+        constexpr pointer(decltype(nullptr) = nullptr) noexcept : fd(-1) {}
 
-        constexpr pointer(pointer&& other) noexcept  : fd(std::exchange(other.fd,0)) {}
+        constexpr pointer(pointer&& other) noexcept  : fd(std::exchange(other.fd,-1)) {}
         constexpr pointer(pointer const& other) noexcept : fd(other.fd) {}
-        constexpr pointer& operator=(pointer&& other) noexcept { fd = std::exchange(other.fd,0); return *this; }
+        constexpr pointer& operator=(pointer&& other) noexcept { fd = std::exchange(other.fd,-1); return *this; }
         constexpr pointer& operator=(pointer const& other) noexcept { fd = other.fd; return *this; }
 
-        constexpr explicit operator bool() const { return fd; }
+        constexpr explicit operator bool() const { return fd != -1; }
 
         constexpr auto operator<=>(pointer const&) const = default;
     };
