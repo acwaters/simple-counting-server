@@ -12,13 +12,11 @@
 #include "posix-resource-handle.hpp"
 #include "epoll-wrapper.hpp"
 
-int parse(std::string line) { fprintf(stderr, "%s", line.c_str()); return 0; }
-void handle(...) {}
-
 auto listen_on_dual_tcp_socket(uint16_t port) -> resource_handle;
-auto accept_connection(int) -> resource_handle;
-auto get_peer_name(int) -> std::string;
-auto read_lines_from_fd(int) -> std::vector<std::string>;
+auto accept_connection(int fd) -> resource_handle;
+auto get_peer_name(int fd) -> std::string;
+auto read_lines_from_fd(int fd) -> std::vector<std::string>;
+void parse_and_handle(int fd, std::string command, std::vector<resource_handle>* connections, int64_t* count);
 
 int main()
 {
@@ -30,6 +28,7 @@ int main()
     auto poller = epoll();
     poller.add(listen_socket, EPOLLIN);
 
+    fprintf(stderr, "Starting up... count initialized to 0\n");
     int64_t count = 0;
 
     while(true) {
@@ -51,8 +50,7 @@ int main()
             // we have some data on one of our connections
             if (new_event.events & EPOLLIN) {
                 for (auto const& line : read_lines_from_fd(new_event.data.fd)) {
-                    auto command = parse(line);
-                    handle(command, &connections, &count);
+                    parse_and_handle(new_event.data.fd, line, &connections, &count);
                 }
             }
 
@@ -157,4 +155,39 @@ auto read_lines_from_fd(int infd) -> std::vector<std::string>
     free(buffer);
 
     return ret;
+}
+
+void parse_and_handle(int fd, std::string command, std::vector<resource_handle>* connections, int64_t* count)
+{
+    auto send_count = [&](int fd) {
+        auto output = std::to_string(*count);
+        if (send(fd, output.data(), output.size(), MSG_NOSIGNAL) < 0) {
+            fprintf(stderr, "Failed to send output on fd %d: ", fd);
+            perror("");
+        }
+    };
+
+    if (command == "OUTPUT\r\n") {
+        fprintf(stderr, "%s requests the count; it is %ld\n", get_peer_name(fd).c_str(), *count);
+        send_count(fd);
+    }
+
+    int64_t delta;
+    if (sscanf(command.data(), "INCR %ld\r\n", &delta) == 1) {
+        *count += delta;
+        fprintf(stderr, "%s increments the count by %ld to %ld\n", get_peer_name(fd).c_str(), delta, *count);
+
+        for (auto const& conn : *connections) {
+            send_count(conn.get().fd);
+        }
+    }
+
+    if (sscanf(command.data(), "DECR %ld\r\n", &delta) == 1) {
+        *count -= delta;
+        fprintf(stderr, "%s decrements the count by %ld to %ld\n", get_peer_name(fd).c_str(), delta, *count);
+
+        for (auto const& conn : *connections) {
+            send_count(conn.get().fd);
+        }
+    }
 }
