@@ -12,11 +12,13 @@
 #include "posix-resource-handle.hpp"
 #include "epoll-wrapper.hpp"
 
-void parse(char const* line) { fprintf(stderr, "%s", line); }
+int parse(std::string line) { fprintf(stderr, "%s", line.c_str()); return 0; }
+void handle(...) {}
 
 auto listen_on_dual_tcp_socket(uint16_t port) -> resource_handle;
 auto accept_connection(int) -> resource_handle;
 auto get_peer_name(int) -> std::string;
+auto read_lines_from_fd(int) -> std::vector<std::string>;
 
 int main()
 {
@@ -27,6 +29,8 @@ int main()
 
     auto poller = epoll();
     poller.add(listen_socket, EPOLLIN);
+
+    int64_t count = 0;
 
     while(true) {
         auto new_event = poller.wait();
@@ -46,20 +50,10 @@ int main()
 
             // we have some data on one of our connections
             if (new_event.events & EPOLLIN) {
-                auto in = fdopen(new_event.data.fd, "r");
-                if (!in) {
-                    perror("Failed to open stream for socket");
-                    continue;
+                for (auto const& line : read_lines_from_fd(new_event.data.fd)) {
+                    auto command = parse(line);
+                    handle(command, &connections, &count);
                 }
-
-                char* buffer = nullptr;
-                size_t length = 0;
-                int bytes = 0;
-                while ((bytes = getline(&buffer, &length, in)) > 0) {
-                    parse(buffer);
-                }
-
-                free(buffer);
             }
 
             // one of our connections hung up
@@ -142,4 +136,25 @@ auto get_peer_name(int conn_socket) -> std::string
     }
 
     return buffer;
+}
+
+auto read_lines_from_fd(int infd) -> std::vector<std::string>
+{
+    auto in = fdopen(infd, "r");
+    if (!in) {
+        perror("Failed to open stream for file descriptor");
+        return {};
+    }
+
+    std::vector<std::string> ret;
+
+    char* buffer = nullptr;
+    size_t length = 0;
+    int bytes = 0;
+    while ((bytes = getline(&buffer, &length, in)) > 0) {
+        ret.push_back(std::string(buffer));
+    }
+    free(buffer);
+
+    return ret;
 }
