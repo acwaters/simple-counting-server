@@ -13,39 +13,12 @@
 
 void parse(char const* line) { fprintf(stderr, "%s", line); }
 
+auto listen_on_dual_tcp_socket(uint16_t port) -> resource_handle;
 auto accept_connection(resource_handle const&) -> resource_handle;
 
-int main() {
-    auto listen_socket = resource_handle(socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0));
-
-    if (listen_socket.get().fd < 0) {
-        perror("Failed to open socket");
-        listen_socket.release();
-        return 1;
-    }
-
-    // Default varies by platform, so explicitly opt into IPv4 connections on this socket
-    uint32_t off = 0;
-    if (setsockopt(listen_socket.get().fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off)) < 0) {
-        perror("Failed to unset IPv6-only");
-        return 2;
-    }
-
-    auto listen_addr = sockaddr_in6 {
-        .sin6_family = AF_INET6,
-        .sin6_port   = htons(8089),
-        .sin6_addr   = IN6ADDR_ANY_INIT
-    };
-
-    if (bind(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&listen_addr), sizeof(listen_addr)) < 0) {
-        perror("Failed to bind socket");
-        return 3;
-    }
-
-    if (listen(listen_socket.get().fd, 64) < 0) {
-        perror("Failed to listen on socket");
-        return 4;
-    }
+int main()
+{
+    auto listen_socket = listen_on_dual_tcp_socket(8089);
 
     std::vector<resource_handle> connections;
     connections.reserve(1024);  // 4 KiB in exchange for zero reallocations on the first 1024 connections is a no-brainer
@@ -115,6 +88,38 @@ int main() {
             }
         }
     }
+}
+
+auto listen_on_dual_tcp_socket(uint16_t port) -> resource_handle
+{
+    auto listen_socket = resource_handle(socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0));
+
+    if (listen_socket.get().fd < 0) {
+        listen_socket.release();
+        throw_system_error();
+    }
+
+    // Default varies by platform, so explicitly opt into IPv4 connections on this socket
+    uint32_t off = 0;
+    if (setsockopt(listen_socket.get().fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off)) < 0) {
+        throw_system_error();
+    }
+
+    auto listen_addr = sockaddr_in6 {
+        .sin6_family = AF_INET6,
+        .sin6_port   = htons(port),
+        .sin6_addr   = IN6ADDR_ANY_INIT
+    };
+
+    if (bind(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&listen_addr), sizeof(listen_addr)) < 0) {
+        throw_system_error();
+    }
+
+    if (listen(listen_socket.get().fd, 64) < 0) {
+        throw_system_error();
+    }
+
+    return listen_socket;
 }
 
 auto accept_connection(resource_handle const& listen_socket) -> resource_handle
