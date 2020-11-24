@@ -4,12 +4,12 @@
 
 #include <netdb.h>
 #include <netinet/in.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include "posix-resource-handle.hpp"
+#include "epoll-wrapper.hpp"
 
 void parse(char const* line) { fprintf(stderr, "%s", line); }
 
@@ -50,47 +50,19 @@ int main() {
     std::vector<resource_handle> connections;
     connections.reserve(1024);  // 4 KiB in exchange for zero reallocations on the first 1024 connections is a no-brainer
 
-    auto epoll = resource_handle(epoll_create(1));
-    if (epoll.get().fd < 0) {
-        perror("Failed to create epoll");
-        epoll.release();
-        return 5;
-    }
-
-    auto event = epoll_event {
-        .events = EPOLLIN,
-        .data = { .fd = listen_socket.get().fd }
-    };
-
-    if (epoll_ctl(epoll.get().fd, EPOLL_CTL_ADD, listen_socket.get().fd, &event) < 0) {
-        perror("Failed to add listening socket to epoll");
-    }
+    auto poller = epoll();
+    poller.add(listen_socket, EPOLLIN);
 
     while(true) {
-        auto new_event = epoll_event{};
-        if (epoll_wait(epoll.get().fd, &new_event, 1, -1) < 0) {
-            perror("Failed to wait on epoll");
-            return 6;
-        }
+        auto new_event = poller.wait();
 
         // new incoming connection
         if (new_event.data.fd == listen_socket.get().fd) {
             auto new_connection = accept_connection(listen_socket);
-            if (!new_connection) {
-                continue;
+            if (new_connection) {
+                poller.add(new_connection, EPOLLIN | EPOLLRDHUP);
+                connections.push_back(std::move(new_connection));
             }
-
-            auto data_event = epoll_event {
-                .events = EPOLLIN | EPOLLRDHUP,
-                .data = { .fd = new_connection.get().fd }
-            };
-
-            if (epoll_ctl(epoll.get().fd, EPOLL_CTL_ADD, new_connection.get().fd, &data_event) < 0) {
-                perror("Failed to add new connection to epoll");
-                continue;
-            }
-
-            connections.push_back(std::move(new_connection));
         }
 
         // event from one of our connections
