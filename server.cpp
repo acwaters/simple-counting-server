@@ -29,6 +29,8 @@ struct fd_deleter {
         constexpr pointer& operator=(pointer&& other) noexcept { fd = std::exchange(other.fd,0); return *this; }
         constexpr pointer& operator=(pointer const& other) noexcept { fd = other.fd; return *this; }
 
+        constexpr explicit operator bool() const { return fd; }
+
         constexpr auto operator<=>(pointer const&) const = default;
     };
 
@@ -113,9 +115,9 @@ int main() {
             }
 
             if (connect_size == sizeof(connect_addr)) {
-                static char buffer[1024];
-                if (getnameinfo(reinterpret_cast<sockaddr*>(&connect_addr), connect_size, buffer, sizeof(buffer), nullptr, 0, 0) == 0) {
-                    fprintf(stderr, "New connection from %s\n", buffer);
+                static char peername[1024];
+                if (getnameinfo(reinterpret_cast<sockaddr*>(&connect_addr), connect_size, peername, sizeof(peername), nullptr, 0, 0) == 0) {
+                    fprintf(stderr, "New connection from %s\n", peername);
                 }
                 else {
                     perror("Failed to get connection name");
@@ -126,7 +128,7 @@ int main() {
             }
 
             auto data_event = epoll_event {
-                .events = EPOLLIN | EPOLLHUP,
+                .events = EPOLLIN | EPOLLRDHUP,
                 .data = { .fd = new_connection.get().fd }
             };
 
@@ -140,6 +142,36 @@ int main() {
 
         // event from one of our connections
         else {
+            auto peer_addr = sockaddr_in6{};
+            auto peer_size = unsigned(sizeof(peer_addr));
+            static char peername[1024];
+            if (getpeername(new_event.data.fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_size) == 0) {
+                if (peer_size == sizeof(peer_addr)) {
+                    if (getnameinfo(reinterpret_cast<sockaddr*>(&peer_addr), peer_size, peername, sizeof(peername), nullptr, 0, 0) < 0) {
+                        perror("Failed to get peer name");
+                        peername[0] = '\0';
+                    }
+                }
+                else {
+                    fprintf(stderr, "Warning: Unexpected peer address size\n");
+                    peername[0] = '\0';
+                }
+            }
+            else {
+                perror("Failed to get peer address");
+                peername[0] = '\0';
+            }
+
+            // one of our connections hung up
+            if (new_event.events & (EPOLLHUP | EPOLLRDHUP)) {
+                std::erase_if(connections, [&](resource_handle const& handle) {
+                    return handle.get().fd == new_event.data.fd;
+                });
+
+                fprintf(stderr, "%s hung up\n", peername[0] ? peername : "Peer");
+            }
+
+            if (new_event.events & EPOLLIN) {
 
             }
         }
