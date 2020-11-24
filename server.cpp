@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #include <netdb.h>
@@ -14,7 +15,8 @@
 void parse(char const* line) { fprintf(stderr, "%s", line); }
 
 auto listen_on_dual_tcp_socket(uint16_t port) -> resource_handle;
-auto accept_connection(resource_handle const&) -> resource_handle;
+auto accept_connection(int) -> resource_handle;
+auto get_peer_name(int) -> std::string;
 
 int main()
 {
@@ -31,7 +33,7 @@ int main()
 
         // new incoming connection
         if (new_event.data.fd == listen_socket.get().fd) {
-            auto new_connection = accept_connection(listen_socket);
+            auto new_connection = accept_connection(listen_socket.get().fd);
             if (new_connection) {
                 poller.add(new_connection, EPOLLIN | EPOLLRDHUP);
                 connections.push_back(std::move(new_connection));
@@ -40,25 +42,7 @@ int main()
 
         // event from one of our connections
         else {
-            auto peer_addr = sockaddr_in6{};
-            auto peer_size = unsigned(sizeof(peer_addr));
-            static char peername[1024];
-            if (getpeername(new_event.data.fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_size) == 0) {
-                if (peer_size == sizeof(peer_addr)) {
-                    if (getnameinfo(reinterpret_cast<sockaddr*>(&peer_addr), peer_size, peername, sizeof(peername), nullptr, 0, 0) < 0) {
-                        perror("Failed to get peer name");
-                        peername[0] = '\0';
-                    }
-                }
-                else {
-                    fprintf(stderr, "Warning: Unexpected peer address size\n");
-                    peername[0] = '\0';
-                }
-            }
-            else {
-                perror("Failed to get peer address");
-                peername[0] = '\0';
-            }
+            auto peer_name = get_peer_name(new_event.data.fd);
 
             // we have some data on one of our connections
             if (new_event.events & EPOLLIN) {
@@ -84,7 +68,7 @@ int main()
                     return handle.get().fd == new_event.data.fd;
                 });
 
-                fprintf(stderr, "%s hung up\n", peername[0] ? peername : "Peer");
+                fprintf(stderr, "%s hung up\n", peer_name.c_str());
             }
         }
     }
@@ -122,29 +106,40 @@ auto listen_on_dual_tcp_socket(uint16_t port) -> resource_handle
     return listen_socket;
 }
 
-auto accept_connection(resource_handle const& listen_socket) -> resource_handle
+auto accept_connection(int listen_socket) -> resource_handle
 {
-    auto connect_addr = sockaddr_in6{};
-    auto connect_size = unsigned(sizeof(connect_addr));
-    auto new_connection = resource_handle(accept4(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&connect_addr), &connect_size, SOCK_NONBLOCK));
+    auto new_connection = resource_handle(accept4(listen_socket, nullptr, nullptr, SOCK_NONBLOCK));
     if (new_connection.get().fd < 0) {
         perror("Failed to accept connection");
         new_connection.release();
         return nullptr;
     }
 
-    if (connect_size == sizeof(connect_addr)) {
-        static char peername[1024];
-        if (getnameinfo(reinterpret_cast<sockaddr*>(&connect_addr), connect_size, peername, sizeof(peername), nullptr, 0, 0) == 0) {
-            fprintf(stderr, "New connection from %s\n", peername);
-        }
-        else {
-            perror("Failed to get connection name");
-        }
-    }
-    else {
-        fprintf(stderr, "Warning: Unexpected connection address size\n");
-    }
+    auto name = get_peer_name(new_connection.get().fd);
+    fprintf(stderr, "New connection from %s\n", name.c_str());
 
     return new_connection;
+}
+
+auto get_peer_name(int conn_socket) -> std::string
+{
+    auto peer_addr = sockaddr_in6{};
+    auto peer_size = unsigned(sizeof(peer_addr));
+    if (getpeername(conn_socket, reinterpret_cast<sockaddr*>(&peer_addr), &peer_size) < 0) {
+        perror("Failed to get peer address");
+        return "peer";
+    }
+
+    if (peer_size != sizeof(peer_addr)) {
+        fprintf(stderr, "Unexpected address size — peer is not IPv6 ???\n");
+        return "peer";
+    }
+
+    static char buffer[1024];
+    if (getnameinfo(reinterpret_cast<sockaddr*>(&peer_addr), peer_size, buffer, sizeof(buffer), nullptr, 0, 0) < 0) {
+        perror("Failed to get peer name");
+        return "peer";
+    }
+
+    return buffer;
 }
