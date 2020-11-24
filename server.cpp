@@ -48,6 +48,10 @@ int main()
 
     while(running) {
         auto new_event = poller.wait();
+        if (new_event.data.fd == 0) {
+            // we were woken up by a signal
+            continue;
+        }
 
         // new incoming connection
         if (new_event.data.fd == listen_socket.get().fd) {
@@ -145,8 +149,8 @@ auto get_peer_name(int conn_socket) -> std::string
     }
 
     static char buffer[1024];
-    if (getnameinfo(reinterpret_cast<sockaddr*>(&peer_addr), peer_size, buffer, sizeof(buffer), nullptr, 0, 0) < 0) {
-        perror("Failed to get peer name");
+    if (int err = getnameinfo(reinterpret_cast<sockaddr*>(&peer_addr), peer_size, buffer, sizeof(buffer), nullptr, 0, 0); err < 0) {
+        fprintf(stderr, "Failed to get peer name: %s\n", gai_strerror(err));
         return "peer";
     }
 
@@ -178,9 +182,19 @@ void parse_and_handle(int fd, std::string command, std::vector<resource_handle>*
 {
     auto send_count = [&](int fd) {
         auto output = std::to_string(*count);
-        if (send(fd, output.data(), output.size(), MSG_NOSIGNAL) < 0) {
-            fprintf(stderr, "Failed to send output on fd %d: ", fd);
-            perror("");
+        for (size_t sent = 0; sent < output.size(); ) {
+            if (auto ret = send(fd, &output[sent], output.size(), MSG_NOSIGNAL); ret < 0) {
+                if (errno == EINTR)
+                    continue;
+
+                fprintf(stderr, "Failed to send output on fd %d: ", fd);
+                perror("");
+                break;
+            }
+
+            else {
+                sent += ret;
+            }
         }
     };
 

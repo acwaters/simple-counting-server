@@ -31,7 +31,10 @@ struct epoll {
     auto wait() -> epoll_event
     {
         auto event = epoll_event{};
-        if (epoll_wait(handle.get().fd, &event, 1, -1) < 0) {
+        if (int err = epoll_wait(handle.get().fd, &event, 1, -1); err < 0) {
+            if (errno == EINTR)
+                return {};
+
             throw_system_error();
         }
 
