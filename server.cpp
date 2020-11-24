@@ -13,7 +13,8 @@
 
 void parse(char const* line) { fprintf(stderr, "%s", line); }
 
-// And now for the main event...
+auto accept_connection(resource_handle const&) -> resource_handle;
+
 int main() {
     auto listen_socket = resource_handle(socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0));
 
@@ -74,26 +75,9 @@ int main() {
 
         // new incoming connection
         if (new_event.data.fd == listen_socket.get().fd) {
-            auto connect_addr = sockaddr_in6{};
-            auto connect_size = unsigned(sizeof(connect_addr));
-            auto new_connection = resource_handle(accept4(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&connect_addr), &connect_size, SOCK_NONBLOCK));
-            if (new_connection.get().fd < 0) {
-                perror("Failed to accept connection");
-                new_connection.release();
+            auto new_connection = accept_connection(listen_socket);
+            if (!new_connection) {
                 continue;
-            }
-
-            if (connect_size == sizeof(connect_addr)) {
-                static char peername[1024];
-                if (getnameinfo(reinterpret_cast<sockaddr*>(&connect_addr), connect_size, peername, sizeof(peername), nullptr, 0, 0) == 0) {
-                    fprintf(stderr, "New connection from %s\n", peername);
-                }
-                else {
-                    perror("Failed to get connection name");
-                }
-            }
-            else {
-                fprintf(stderr, "Warning: Unexpected connection address size\n");
             }
 
             auto data_event = epoll_event {
@@ -159,4 +143,31 @@ int main() {
             }
         }
     }
+}
+
+auto accept_connection(resource_handle const& listen_socket) -> resource_handle
+{
+    auto connect_addr = sockaddr_in6{};
+    auto connect_size = unsigned(sizeof(connect_addr));
+    auto new_connection = resource_handle(accept4(listen_socket.get().fd, reinterpret_cast<sockaddr*>(&connect_addr), &connect_size, SOCK_NONBLOCK));
+    if (new_connection.get().fd < 0) {
+        perror("Failed to accept connection");
+        new_connection.release();
+        return nullptr;
+    }
+
+    if (connect_size == sizeof(connect_addr)) {
+        static char peername[1024];
+        if (getnameinfo(reinterpret_cast<sockaddr*>(&connect_addr), connect_size, peername, sizeof(peername), nullptr, 0, 0) == 0) {
+            fprintf(stderr, "New connection from %s\n", peername);
+        }
+        else {
+            perror("Failed to get connection name");
+        }
+    }
+    else {
+        fprintf(stderr, "Warning: Unexpected connection address size\n");
+    }
+
+    return new_connection;
 }
